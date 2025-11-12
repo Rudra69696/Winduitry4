@@ -1,23 +1,29 @@
---[[
-    Advanced Roblox UI Library
-    Features: Window, Tabs, Button, Slider, Toggle
-    Place this script in ReplicatedStorage and require it from your LocalScript.
-]]
+-- AdvancedUILibrary (improved)
+-- Place as ModuleScript in ReplicatedStorage
 
+local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 
 local UI = {}
+UI.__index = UI
 
--- Helper to make draggable window
-function UI:MakeDraggable(frame)
+local function safeCall(f, ...)
+    if type(f) == "function" then
+        local ok, err = pcall(f, ...)
+        if not ok then warn("UI callback error:", err) end
+    end
+end
+
+-- draggable by titlebar only
+function UI:MakeDraggable(frame, title)
     local dragging, offset
-    frame.InputBegan:Connect(function(input)
+    title.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             offset = input.Position - frame.AbsolutePosition
         end
     end)
-    frame.InputEnded:Connect(function(input)
+    title.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = false
         end
@@ -29,184 +35,353 @@ function UI:MakeDraggable(frame)
     end)
 end
 
--- Create main window
-function UI:CreateWindow(props)
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Parent = game.Players.LocalPlayer.PlayerGui
-
-    local frame = Instance.new("Frame")
-    frame.Size = props.Size or UDim2.new(0, 400, 0, 300)
-    frame.Position = props.Position or UDim2.new(0.5, -200, 0.5, -150)
-    frame.BackgroundColor3 = props.BackgroundColor3 or Color3.fromRGB(40, 40, 40)
-    frame.BorderSizePixel = 0
-    frame.Parent = screenGui
-
-    self:MakeDraggable(frame)
-    return frame
+local function createScreenGui(name)
+    local sg = Instance.new("ScreenGui")
+    sg.Name = name or "AdvancedUI"
+    sg.ResetOnSpawn = false
+    sg.DisplayOrder = 999
+    return sg
 end
 
--- Create tab system
-function UI:CreateTabs(window, tabNames)
-    local tabs = {}
-    local tabBar = Instance.new("Frame")
-    tabBar.Size = UDim2.new(1, 0, 0, 32)
-    tabBar.Position = UDim2.new(0,0,0,0)
+-- CreateWindow returns a window object with helper methods
+function UI:CreateWindow(props)
+    props = props or {}
+    local player = Players.LocalPlayer
+    assert(player, "CreateWindow must be called from a LocalScript (client).")
+
+    local screen = createScreenGui(props.Name)
+    screen.Parent = player:WaitForChild("PlayerGui")
+
+    local frame = Instance.new("Frame")
+    frame.Name = "Window"
+    frame.Size = props.Size or UDim2.new(0, 420, 0, 320)
+    frame.Position = props.Position or UDim2.new(0.5, -(frame.Size.X.Offset/2), 0.4, -(frame.Size.Y.Offset/2))
+    frame.BackgroundColor3 = props.BackgroundColor3 or Color3.fromRGB(40,40,40)
+    frame.BorderSizePixel = 0
+    frame.Parent = screen
+
+    -- Titlebar
+    local titlebar = Instance.new("Frame", frame)
+    titlebar.Name = "Titlebar"
+    titlebar.Size = UDim2.new(1,0,0,32)
+    titlebar.BackgroundColor3 = Color3.fromRGB(35,35,35)
+
+    local titleLbl = Instance.new("TextLabel", titlebar)
+    titleLbl.Name = "Title"
+    titleLbl.Size = UDim2.new(0.7, 0, 1, 0)
+    titleLbl.Position = UDim2.new(0.02,0,0,0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text = props.Title or "Window"
+    titleLbl.TextColor3 = Color3.fromRGB(230,230,230)
+    titleLbl.Font = Enum.Font.GothamBold
+    titleLbl.TextSize = 16
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btnClose = Instance.new("TextButton", titlebar)
+    btnClose.Size = UDim2.new(0,40,0,24)
+    btnClose.Position = UDim2.new(1, -46, 0, 4)
+    btnClose.Text = "✕"
+    btnClose.Font = Enum.Font.SourceSansBold
+    btnClose.TextSize = 18
+    btnClose.BackgroundColor3 = Color3.fromRGB(100,30,30)
+    btnClose.TextColor3 = Color3.new(1,1,1)
+
+    local btnMin = Instance.new("TextButton", titlebar)
+    btnMin.Size = UDim2.new(0,40,0,24)
+    btnMin.Position = UDim2.new(1, -92, 0, 4)
+    btnMin.Text = "—"
+    btnMin.Font = Enum.Font.SourceSansBold
+    btnMin.TextSize = 18
+    btnMin.BackgroundColor3 = Color3.fromRGB(80,80,80)
+    btnMin.TextColor3 = Color3.new(1,1,1)
+
+    -- Tabbar
+    local tabBar = Instance.new("Frame", frame)
+    tabBar.Name = "TabBar"
+    tabBar.Position = UDim2.new(0,0,0,32)
+    tabBar.Size = UDim2.new(1,0,0,36)
     tabBar.BackgroundColor3 = Color3.fromRGB(50,50,50)
-    tabBar.Parent = window
 
-    local tabWidth = math.floor(400 / #tabNames)
+    -- Container to hold tab pages
+    local container = Instance.new("Frame", frame)
+    container.Name = "Container"
+    container.Position = UDim2.new(0,0,0,68)
+    container.Size = UDim2.new(1,0,1,-68)
+    container.BackgroundTransparency = 1
+
+    -- internal tabs state
+    local tabs = {}
     local tabContents = {}
+    local function computeTabWidth()
+        local totalW = frame.Size.X.Offset
+        return math.floor(totalW / math.max(1, #tabs))
+    end
 
-    for i, name in ipairs(tabNames) do
+    local function addTab(name)
+        local idx = #tabs + 1
         local tabBtn = Instance.new("TextButton")
-        tabBtn.Size = UDim2.new(0, tabWidth, 0, 32)
-        tabBtn.Position = UDim2.new(0, (i-1)*tabWidth, 0, 0)
+        tabBtn.Size = UDim2.new(0, computeTabWidth(), 0, 36)
+        tabBtn.Position = UDim2.new(0, (idx-1) * computeTabWidth(), 0, 0)
         tabBtn.Text = name
         tabBtn.BackgroundColor3 = Color3.fromRGB(60,60,60)
-        tabBtn.TextColor3 = Color3.fromRGB(255,255,255)
+        tabBtn.TextColor3 = Color3.fromRGB(235,235,235)
         tabBtn.Font = Enum.Font.SourceSans
-        tabBtn.TextSize = 18
+        tabBtn.TextSize = 16
         tabBtn.Parent = tabBar
 
-        local tabContent = Instance.new("Frame")
-        tabContent.Size = UDim2.new(1, 0, 1, -32)
-        tabContent.Position = UDim2.new(0,0,0,32)
-        tabContent.BackgroundTransparency = 1
-        tabContent.Visible = (i == 1) -- Show first tab by default
-        tabContent.Parent = window
-        tabContents[name] = tabContent
+        local content = Instance.new("Frame", container)
+        content.Size = UDim2.new(1,0,1,0)
+        content.BackgroundTransparency = 1
+        content.Visible = (idx == 1)
+
+        -- layout so controls stack automatically
+        local layout = Instance.new("UIListLayout", content)
+        layout.Padding = UDim.new(0,10)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+        local padding = Instance.new("UIPadding", content)
+        padding.PaddingTop = UDim.new(0,8)
+        padding.PaddingLeft = UDim.new(0,8)
 
         tabBtn.MouseButton1Click:Connect(function()
-            for _, content in pairs(tabContents) do
-                content.Visible = false
-            end
-            tabContent.Visible = true
+            for _,v in pairs(tabContents) do v.Visible = false end
+            content.Visible = true
         end)
 
-        tabs[name] = {Button = tabBtn, Content = tabContent}
+        table.insert(tabs, tabBtn)
+        tabContents[name] = content
+
+        -- recompute widths
+        local w = computeTabWidth()
+        for i,btn in ipairs(tabs) do
+            btn.Size = UDim2.new(0, w, 0, 36)
+            btn.Position = UDim2.new(0, (i-1)*w, 0, 0)
+        end
+
+        return name, content
     end
 
-    return tabs
-end
+    -- window object to return
+    local win = {}
+    win.ScreenGui = screen
+    win.Frame = frame
+    win.Container = container
+    win.TabBar = tabBar
+    win.TitleLabel = titleLbl
 
--- Button
-function UI:CreateButton(parent, props)
-    local button = Instance.new("TextButton")
-    button.Size = props.Size or UDim2.new(0, 120, 0, 36)
-    button.Position = props.Position or UDim2.new(0, 10, 0, 10)
-    button.BackgroundColor3 = props.BackgroundColor3 or Color3.fromRGB(90, 90, 90)
-    button.Text = props.Text or "Button"
-    button.TextColor3 = props.TextColor3 or Color3.fromRGB(255, 255, 255)
-    button.Font = Enum.Font.SourceSans
-    button.TextSize = props.TextSize or 18
-    button.Parent = parent
-    if props.Callback then
-        button.MouseButton1Click:Connect(props.Callback)
-    end
-    return button
-end
-
--- Toggle
-function UI:CreateToggle(parent, props)
-    local frame = Instance.new("Frame")
-    frame.Size = props.Size or UDim2.new(0, 120, 0, 36)
-    frame.Position = props.Position or UDim2.new(0,10,0,56)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0,36,0,36)
-    btn.Position = UDim2.new(0,0,0,0)
-    btn.BackgroundColor3 = Color3.fromRGB(100,100,100)
-    btn.Text = ""
-    btn.Parent = frame
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0,70,0,36)
-    lbl.Position = UDim2.new(0,46,0,0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = props.Text or "Toggle"
-    lbl.TextColor3 = Color3.fromRGB(255,255,255)
-    lbl.Font = Enum.Font.SourceSans
-    lbl.TextSize = 16
-    lbl.Parent = frame
-
-    local state = props.Default or false
-    btn.BackgroundColor3 = state and Color3.fromRGB(0, 180, 0) or Color3.fromRGB(100,100,100)
-    
-    btn.MouseButton1Click:Connect(function()
-        state = not state
-        btn.BackgroundColor3 = state and Color3.fromRGB(0, 180, 0) or Color3.fromRGB(100,100,100)
-        if props.Callback then props.Callback(state) end
-    end)
-    return frame
-end
-
--- Slider
-function UI:CreateSlider(parent, props)
-    local frame = Instance.new("Frame")
-    frame.Size = props.Size or UDim2.new(0, 200, 0, 36)
-    frame.Position = props.Position or UDim2.new(0, 10, 0, 100)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-
-    local bar = Instance.new("Frame")
-    bar.Size = UDim2.new(0, 160, 0, 8)
-    bar.Position = UDim2.new(0,20,0,14)
-    bar.BackgroundColor3 = Color3.fromRGB(180,180,180)
-    bar.BorderSizePixel = 0
-    bar.Parent = frame
-
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0,16,0,24)
-    knob.Position = UDim2.new(0,20,0,-4)
-    knob.BackgroundColor3 = Color3.fromRGB(50,150,255)
-    knob.BorderSizePixel = 0
-    knob.Parent = frame
-
-    local min = props.Min or 0
-    local max = props.Max or 100
-    local value = props.Default or min
-
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(0,50,0,24)
-    lbl.Position = UDim2.new(0, 0, 0, -28)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = tostring(value)
-    lbl.TextColor3 = Color3.fromRGB(255,255,255)
-    lbl.Font = Enum.Font.SourceSans
-    lbl.TextSize = 16
-    lbl.Parent = frame
-
-    local function setValue(newValue)
-        value = math.clamp(newValue, min, max)
-        lbl.Text = tostring(math.floor(value))
-        local percent = (value-min)/(max-min)
-        knob.Position = UDim2.new(0, 20 + percent*160 - 8, 0, -4)
-        if props.Callback then props.Callback(value) end
+    function win:AddTab(name)
+        local n, content = addTab(name)
+        return {
+            Name = n,
+            Content = content
+        }
     end
 
-    setValue(value)
+    -- basic widget factory helpers (they parent to tab Content and auto layout)
+    function win:AddButton(parent, props)
+        props = props or {}
+        local btn = Instance.new("TextButton")
+        btn.Size = props.Size or UDim2.new(0, 160, 0, 34)
+        btn.BackgroundColor3 = props.BackgroundColor3 or Color3.fromRGB(90,90,90)
+        btn.Text = props.Text or "Button"
+        btn.TextColor3 = props.TextColor3 or Color3.new(1,1,1)
+        btn.Font = Enum.Font.SourceSansBold
+        btn.TextSize = props.TextSize or 16
+        btn.LayoutOrder = props.LayoutOrder or 1
+        btn.Parent = parent
+        if props.Callback then btn.MouseButton1Click:Connect(function() safeCall(props.Callback) end) end
+        return btn
+    end
 
-    knob.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            local moveConn
-            moveConn = UIS.InputChanged:Connect(function(moveInput)
-                if moveInput.UserInputType == Enum.UserInputType.MouseMovement then
-                    local mouseX = moveInput.Position.X
-                    local barAbsPos = bar.AbsolutePosition.X
-                    local percent = math.clamp((mouseX - barAbsPos) / 160, 0, 1)
-                    setValue(min + percent * (max - min))
-                end
-            end)
-            knob.InputEnded:Connect(function(endInput)
-                if endInput.UserInputType == Enum.UserInputType.MouseButton1 then
-                    if moveConn then moveConn:Disconnect() end
-                end
+    function win:AddToggle(parent, props)
+        props = props or {}
+        local frame = Instance.new("Frame")
+        frame.Size = props.Size or UDim2.new(0,200,0,34)
+        frame.BackgroundTransparency = 1
+        frame.LayoutOrder = props.LayoutOrder or 1
+        frame.Parent = parent
+
+        local btn = Instance.new("TextButton", frame)
+        btn.Size = UDim2.new(0,34,1,0)
+        btn.Position = UDim2.new(0,0,0,0)
+        btn.BackgroundColor3 = props.Default and Color3.fromRGB(0,180,0) or Color3.fromRGB(120,120,120)
+        btn.Text = ""
+        btn.Font = Enum.Font.SourceSans
+        btn.TextSize = 16
+
+        local lbl = Instance.new("TextLabel", frame)
+        lbl.Size = UDim2.new(1, -40, 1, 0)
+        lbl.Position = UDim2.new(0,40,0,0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = props.Text or "Toggle"
+        lbl.TextColor3 = Color3.fromRGB(235,235,235)
+        lbl.Font = Enum.Font.SourceSans
+        lbl.TextSize = 16
+
+        local state = props.Default or false
+        btn.MouseButton1Click:Connect(function()
+            state = not state
+            btn.BackgroundColor3 = state and Color3.fromRGB(0,180,0) or Color3.fromRGB(120,120,120)
+            safeCall(props.Callback, state)
+        end)
+        return frame
+    end
+
+    function win:AddSlider(parent, props)
+        props = props or {}
+        local frame = Instance.new("Frame")
+        frame.Size = props.Size or UDim2.new(0,260,0,44)
+        frame.BackgroundTransparency = 1
+        frame.LayoutOrder = props.LayoutOrder or 1
+        frame.Parent = parent
+
+        local lbl = Instance.new("TextLabel", frame)
+        lbl.Size = UDim2.new(0,60,0,24)
+        lbl.Position = UDim2.new(0,0,0,0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = tostring(props.Default or props.Min or 0)
+        lbl.Font = Enum.Font.SourceSans
+        lbl.TextColor3 = Color3.fromRGB(235,235,235)
+
+        local bar = Instance.new("Frame", frame)
+        bar.Size = UDim2.new(0,160,0,8)
+        bar.Position = UDim2.new(0,70,0,8)
+        bar.BackgroundColor3 = Color3.fromRGB(160,160,160)
+        bar.BorderSizePixel = 0
+
+        local knob = Instance.new("Frame", frame)
+        knob.Size = UDim2.new(0,12,0,20)
+        knob.Position = UDim2.new(0,70,0,-6)
+        knob.BackgroundColor3 = Color3.fromRGB(50,150,255)
+
+        local min = props.Min or 0
+        local max = props.Max or 100
+        local value = props.Default or min
+
+        local function setValue(v)
+            value = math.clamp(v, min, max)
+            lbl.Text = tostring(math.floor(value))
+            local percent = (value - min) / math.max(1, (max - min))
+            local x = 70 + percent * 160 - 6
+            knob.Position = UDim2.new(0, x, 0, -6)
+            safeCall(props.Callback, value)
+        end
+
+        -- dragging
+        local dragging
+        knob.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = true
+            end
+        end)
+        knob.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dragging = false
+            end
+        end)
+        UIS.InputChanged:Connect(function(input)
+            if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                local mx = input.Position.X
+                local barX = bar.AbsolutePosition.X
+                local percent = math.clamp((mx - barX) / bar.AbsoluteSize.X, 0, 1)
+                setValue(min + percent * (max - min))
+            end
+        end)
+
+        setValue(value)
+        return frame
+    end
+
+    function win:AddDropdown(parent, props)
+        props = props or {}
+        local frame = Instance.new("Frame")
+        frame.Size = props.Size or UDim2.new(0,220,0,36)
+        frame.BackgroundTransparency = 1
+        frame.LayoutOrder = props.LayoutOrder or 1
+        frame.Parent = parent
+
+        local btn = Instance.new("TextButton", frame)
+        btn.Size = UDim2.new(1,0,1,0)
+        btn.Text = props.Placeholder or "Select..."
+        btn.BackgroundColor3 = Color3.fromRGB(90,90,90)
+        btn.Font = Enum.Font.SourceSans
+        btn.TextColor3 = Color3.fromRGB(235,235,235)
+
+        local list = Instance.new("Frame", frame)
+        list.Size = UDim2.new(1,0,0,0)
+        list.Position = UDim2.new(0,0,1,4)
+        list.ClipsDescendants = true
+        list.BackgroundColor3 = Color3.fromRGB(60,60,60)
+        list.Visible = false
+
+        local layout = Instance.new("UIListLayout", list)
+
+        local open = false
+        btn.MouseButton1Click:Connect(function()
+            open = not open
+            list.Visible = open
+            list.Size = open and UDim2.new(1,0,0, (#(props.Items or {})*30)) or UDim2.new(1,0,0,0)
+        end)
+
+        for i,item in ipairs(props.Items or {}) do
+            local itBtn = Instance.new("TextButton", list)
+            itBtn.Size = UDim2.new(1,0,0,30)
+            itBtn.Position = UDim2.new(0,0,0,(i-1)*30)
+            itBtn.Text = tostring(item)
+            itBtn.BackgroundColor3 = Color3.fromRGB(80,80,80)
+            itBtn.TextColor3 = Color3.fromRGB(235,235,235)
+            itBtn.Font = Enum.Font.SourceSans
+            itBtn.MouseButton1Click:Connect(function()
+                btn.Text = tostring(item)
+                safeCall(props.Callback, item)
+                open = false
+                list.Visible = false
+                list.Size = UDim2.new(1,0,0,0)
             end)
         end
-    end)
-    return frame
+
+        return frame
+    end
+
+    function win:AddTextBox(parent, props)
+        props = props or {}
+        local box = Instance.new("TextBox")
+        box.Size = props.Size or UDim2.new(0,220,0,36)
+        box.BackgroundColor3 = props.BackgroundColor3 or Color3.fromRGB(70,70,70)
+        box.TextColor3 = props.TextColor3 or Color3.fromRGB(230,230,230)
+        box.PlaceholderText = props.Placeholder or ""
+        box.Font = Enum.Font.SourceSans
+        box.TextSize = props.TextSize or 16
+        box.LayoutOrder = props.LayoutOrder or 1
+        box.Parent = parent
+        if props.Callback then
+            box.FocusLost:Connect(function(enter)
+                if enter then safeCall(props.Callback, box.Text) end
+            end)
+        end
+        return box
+    end
+
+    function win:Close()
+        if screen and screen.Parent then screen:Destroy() end
+    end
+
+    function win:Minimize()
+        frame.Visible = false
+    end
+
+    function win:Restore()
+        frame.Visible = true
+    end
+
+    -- buttons functionality
+    btnClose.MouseButton1Click:Connect(function() win:Close() end)
+    btnMin.MouseButton1Click:Connect(function() frame.Visible = not frame.Visible end)
+
+    -- make draggable by title only
+    UI:MakeDraggable(frame, titlebar)
+
+    return win
 end
 
 return UI
